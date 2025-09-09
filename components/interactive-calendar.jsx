@@ -1,35 +1,17 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ChevronLeft, ChevronRight, Calendar, Users, Clock } from "lucide-react"
-import type { WorkoutClass, TrainingProgram } from "@/lib/workouts"
+import { WorkoutClass, TrainingProgram } from "@/lib/workouts"
 
-interface CalendarEvent {
-  id: string
-  title: string
-  date: string
-  time?: string
-  type: "class" | "program"
-  status?: string
-  participants?: number
-  maxParticipants?: number
-}
-
-interface InteractiveCalendarProps {
-  classes: WorkoutClass[]
-  programs: TrainingProgram[]
-  onEventClick?: (event: CalendarEvent) => void
-  onDateSelect?: (date: string) => void
-}
-
-export function InteractiveCalendar({ classes, programs, onEventClick, onDateSelect }: InteractiveCalendarProps) {
+export function InteractiveCalendar({ classes, programs, onEventClick, onDateSelect }) {
   const [currentDate, setCurrentDate] = useState(new Date())
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [selectedDate, setSelectedDate] = useState(null)
 
   const today = new Date()
   const currentMonth = currentDate.getMonth()
@@ -55,33 +37,34 @@ export function InteractiveCalendar({ classes, programs, onEventClick, onDateSel
   }
 
   // Convert classes and programs to events
-  const events: CalendarEvent[] = [
-    ...classes.map((cls) => ({
+  const events = [
+
+    ...(Array.isArray(classes) ? classes : []).map((cls) => ({
       id: cls.id,
-      title: cls.name,
-      date: cls.date,
-      time: cls.time,
-      type: "class" as const,
+      title: cls.title || cls.name || "Untitled Class",
+      date: typeof cls.date === 'string' ? cls.date : '',
+      time: typeof cls.time === 'string' ? cls.time : '',
+      type: "class",
       status: cls.status,
       participants: cls.currentParticipants || 0,
       maxParticipants: cls.maxParticipants,
     })),
-    ...programs.map((prog) => ({
+    ...(Array.isArray(programs) ? programs : []).map((prog) => ({
       id: prog.id,
-      title: prog.name,
-      date: prog.startDate,
-      type: "program" as const,
+      title: typeof prog.name === 'string' ? prog.name : '',
+      date: typeof prog.startDate === 'string' ? prog.startDate : '',
+      type: "program",
     })),
   ]
 
   // Get events for a specific date
-  const getEventsForDate = (day: number) => {
+  const getEventsForDate = (day) => {
     const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
     return events.filter((event) => event.date === dateStr)
   }
 
   // Navigate months
-  const navigateMonth = (direction: "prev" | "next") => {
+  const navigateMonth = (direction) => {
     setCurrentDate((prev) => {
       const newDate = new Date(prev)
       if (direction === "prev") {
@@ -94,14 +77,14 @@ export function InteractiveCalendar({ classes, programs, onEventClick, onDateSel
   }
 
   // Handle date click
-  const handleDateClick = (day: number) => {
+  const handleDateClick = (day  ) => {
     const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
     setSelectedDate(dateStr)
     onDateSelect?.(dateStr)
   }
 
   // Handle event click
-  const handleEventClick = (event: CalendarEvent, e: React.MouseEvent) => {
+  const handleEventClick = (event , e) => {
     e.stopPropagation()
     onEventClick?.(event)
   }
@@ -220,7 +203,7 @@ export function InteractiveCalendar({ classes, programs, onEventClick, onDateSel
           <div className="mt-6 p-4 bg-white/5 rounded-lg border border-white/10">
             <h4 className="text-white font-medium mb-3">Events for {new Date(selectedDate).toLocaleDateString()}</h4>
             <div className="space-y-2">
-              {getEventsForDate(Number.parseInt(selectedDate.split("-")[2])).map((event) => (
+              {getEventsForDate(Number.parseInt((selectedDate || '').split("-")[2] || '0')).map((event) => (
                 <div
                   key={event.id}
                   className="flex items-center justify-between p-3 bg-white/5 rounded border border-white/10"
@@ -253,7 +236,7 @@ export function InteractiveCalendar({ classes, programs, onEventClick, onDateSel
                   )}
                 </div>
               ))}
-              {getEventsForDate(Number.parseInt(selectedDate.split("-")[2])).length === 0 && (
+              {getEventsForDate(Number.parseInt((selectedDate || '').split("-")[2] || '0')).length === 0 && (
                 <div className="text-center py-4 text-white/60">No events scheduled for this date</div>
               )}
             </div>

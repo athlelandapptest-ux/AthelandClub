@@ -2,22 +2,22 @@
 
 import { put } from "@vercel/blob"
 import { revalidatePath } from "next/cache"
-import type { Event, EventRegistration, EventSponsor } from "@/lib/events"
+import { Event, EventRegistration, EventSponsor } from "@/lib/events"
 import { inMemoryEvents, inMemoryRegistrations, inMemorySponsors } from "@/lib/events"
 import {
-  type WorkoutClass,
-  type TrainingProgram,
-  type WorkoutRoutine,
-  type ProgramPhase,
+  WorkoutClass,
+  TrainingProgram,
+  WorkoutRoutine,
+  ProgramPhase,
   inMemoryRoutines,
   inMemoryClasses,
   inMemoryPrograms,
   adjustRoutineForIntensity,
   getPrimaryClassFocus,
   getIntensityLabel,
-  sampleClasses,
 } from "@/lib/workouts"
-import type { SponsorshipRequest, SponsorshipPackage } from "@/lib/sponsorship"
+import { SponsorshipRequest, SponsorshipPackage } from "@/lib/sponsorship"
+import { getNeonSql } from "@/lib/database"
 
 // Import Neon functions for gradual migration
 import {
@@ -28,20 +28,21 @@ import {
   getCurrentProgramNeon,
   createProgramNeon,
   testNeonConnection,
+  createWorkoutTemplateNeon,
+  fetchAllWorkoutTemplatesNeon,
+  updateWorkoutTemplateNeon,
+  deleteWorkoutTemplateNeon,
 } from "@/lib/neon-actions"
 
 // Action result type
-export interface ActionResult<T = any> {
-  success: boolean
-  message?: string
-  data?: T
-}
+
 
 // Feature flag to enable Neon gradually
 const USE_NEON_FOR_EVENTS = process.env.USE_NEON_FOR_EVENTS === "true"
 const USE_NEON_FOR_REGISTRATIONS = process.env.USE_NEON_FOR_REGISTRATIONS === "true"
 const USE_NEON_FOR_SPONSORSHIP = process.env.USE_NEON_FOR_SPONSORSHIP === "true"
 const USE_NEON_FOR_PROGRAMS = process.env.USE_NEON_FOR_PROGRAMS === "true"
+const USE_NEON_FOR_TEMPLATES = process.env.USE_NEON_FOR_TEMPLATES === "true"
 
 // Test Neon connection function
 export async function testDatabaseConnection() {
@@ -59,6 +60,7 @@ export async function testDatabaseConnection() {
       registrations: USE_NEON_FOR_REGISTRATIONS,
       sponsorship: USE_NEON_FOR_SPONSORSHIP,
       programs: USE_NEON_FOR_PROGRAMS,
+      templates: USE_NEON_FOR_TEMPLATES,
     }
 
     return {
@@ -79,14 +81,14 @@ export async function testDatabaseConnection() {
 }
 
 // Event management actions with Neon migration
-export async function createEvent(eventData: Omit<Event, "id" | "createdAt" | "updatedAt">) {
+export async function createEvent(eventData) {
   if (USE_NEON_FOR_EVENTS) {
     return await createEventNeon(eventData)
   }
 
   // Fallback to existing in-memory implementation
   try {
-    const newEvent: Event = {
+    const newEvent = {
       ...eventData,
       id: `event-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -111,7 +113,7 @@ export async function createEvent(eventData: Omit<Event, "id" | "createdAt" | "u
   }
 }
 
-export async function updateEvent(eventId: string, eventData: Partial<Event>) {
+export async function updateEvent(eventId, eventData) {
   try {
     const eventIndex = inMemoryEvents.findIndex((event) => event.id === eventId)
     if (eventIndex === -1) {
@@ -142,7 +144,7 @@ export async function updateEvent(eventId: string, eventData: Partial<Event>) {
   }
 }
 
-export async function deleteEvent(eventId: string) {
+export async function deleteEvent(eventId) {
   try {
     const hasRegistrations = inMemoryRegistrations.some((reg) => reg.eventId === eventId)
     if (hasRegistrations) {
@@ -165,7 +167,7 @@ export async function deleteEvent(eventId: string) {
   }
 }
 
-export async function toggleEventStatus(eventId: string, status: Event["status"]): Promise<ActionResult> {
+export async function toggleEventStatus(eventId, status) {
   try {
     const eventIndex = inMemoryEvents.findIndex((event) => event.id === eventId)
     if (eventIndex === -1) {
@@ -188,7 +190,7 @@ export async function toggleEventStatus(eventId: string, status: Event["status"]
   }
 }
 
-export async function fetchAllEvents(): Promise<Event[]> {
+export async function fetchAllEvents() {
   if (USE_NEON_FOR_EVENTS) {
     return await fetchAllEventsNeon()
   }
@@ -211,7 +213,7 @@ export async function fetchAllEvents(): Promise<Event[]> {
   }
 }
 
-export async function fetchEventById(eventId: string): Promise<Event | null> {
+export async function fetchEventById(eventId) {
   try {
     const event = inMemoryEvents.find((event) => event.id === eventId)
     if (!event) return null
@@ -234,8 +236,8 @@ export async function fetchEventById(eventId: string): Promise<Event | null> {
 
 // Registration management actions
 export async function registerForEvent(
-  registrationData: Omit<EventRegistration, "id" | "registrationDate">,
-): Promise<ActionResult<EventRegistration>> {
+  registrationData,
+) {
   if (USE_NEON_FOR_REGISTRATIONS) {
     return await registerForEventNeon(registrationData)
   }
@@ -276,7 +278,7 @@ export async function registerForEvent(
       return { success: false, message: "Event is full and waitlist is not available" }
     }
 
-    const newRegistration: EventRegistration = {
+    const newRegistration = {
       id: `reg-${Date.now()}-${Math.random().toString(36).substring(2)}`,
       registrationDate: new Date().toISOString(),
       status,
@@ -311,7 +313,7 @@ export async function registerForEvent(
   }
 }
 
-export async function cancelEventRegistration(registrationId: string): Promise<ActionResult> {
+export async function cancelEventRegistration(registrationId) {
   try {
     const registrationIndex = inMemoryRegistrations.findIndex((r) => r.id === registrationId)
     if (registrationIndex === -1) {
@@ -383,18 +385,18 @@ export async function cancelEventRegistration(registrationId: string): Promise<A
   }
 }
 
-export async function getEventRegistrations(eventId: string): Promise<EventRegistration[]> {
+export async function getEventRegistrations(eventId) {
   return inMemoryRegistrations.filter((r) => r.eventId === eventId)
 }
 
-export async function getAllRegistrations(): Promise<EventRegistration[]> {
+export async function getAllRegistrations() {
   return [...inMemoryRegistrations]
 }
 
 export async function updateRegistrationStatus(
-  registrationId: string,
-  status: EventRegistration["status"],
-): Promise<ActionResult> {
+  registrationId ,
+  status,
+) {
   try {
     const registrationIndex = inMemoryRegistrations.findIndex((r) => r.id === registrationId)
     if (registrationIndex === -1) {
@@ -430,9 +432,9 @@ export async function updateRegistrationStatus(
 }
 
 // Image upload actions
-export async function uploadEventImage(formData: FormData): Promise<ActionResult<string>> {
+export async function uploadEventImage(formData) {
   try {
-    const file = formData.get("file") as File
+    const file = formData.get("file")
 
     if (!file) {
       return { success: false, message: "No file provided" }
@@ -462,9 +464,9 @@ export async function uploadEventImage(formData: FormData): Promise<ActionResult
   }
 }
 
-export async function uploadSponsorLogo(formData: FormData): Promise<ActionResult<string>> {
+export async function uploadSponsorLogo(formData) {
   try {
-    const file = formData.get("file") as File
+    const file = formData.get("file")
 
     if (!file) {
       return { success: false, message: "No file provided" }
@@ -495,14 +497,14 @@ export async function uploadSponsorLogo(formData: FormData): Promise<ActionResul
 }
 
 // Sponsor management actions
-export async function fetchAllSponsors(): Promise<EventSponsor[]> {
+export async function fetchAllSponsors() {
   await new Promise((resolve) => setTimeout(resolve, 200))
   return [...inMemorySponsors]
 }
 
-export async function createSponsor(sponsorData: Omit<EventSponsor, "id">): Promise<ActionResult<EventSponsor>> {
+export async function createSponsor(sponsorData) {
   try {
-    const newSponsor: EventSponsor = {
+    const newSponsor = {
       ...sponsorData,
       id: `sponsor-${Date.now()}`,
     }
@@ -517,7 +519,7 @@ export async function createSponsor(sponsorData: Omit<EventSponsor, "id">): Prom
   }
 }
 
-export async function updateSponsor(id: string, updates: Partial<EventSponsor>): Promise<ActionResult<EventSponsor>> {
+export async function updateSponsor(id, updates) {
   try {
     const sponsorIndex = inMemorySponsors.findIndex((sponsor) => sponsor.id === id)
     if (sponsorIndex === -1) {
@@ -539,7 +541,7 @@ export async function updateSponsor(id: string, updates: Partial<EventSponsor>):
   }
 }
 
-export async function deleteSponsor(id: string): Promise<ActionResult> {
+export async function deleteSponsor(id) {
   try {
     const sponsorIndex = inMemorySponsors.findIndex((sponsor) => sponsor.id === id)
     if (sponsorIndex === -1) {
@@ -565,13 +567,13 @@ export async function deleteSponsor(id: string): Promise<ActionResult> {
 }
 
 // Routine management actions
-export async function createWorkoutRoutine(formData: FormData): Promise<ActionResult> {
+export async function createWorkoutRoutine(formData) {
   try {
-    const title = formData.get("title") as string
-    const description = formData.get("description") as string
-    const roundsData = formData.get("roundsData") as string
-    const hyroxReasoning = formData.get("hyroxReasoning") as string
-    const otherHyroxPrepNotes = formData.get("otherHyroxPrepNotes") as string
+    const title = formData.get("title")
+    const description = formData.get("description")
+    const roundsData = formData.get("roundsData")
+    const hyroxReasoning = formData.get("hyroxReasoning")
+    const otherHyroxPrepNotes = formData.get("otherHyroxPrepNotes")
 
     if (!title || !description || !roundsData) {
       return { success: false, message: "Missing required fields" }
@@ -579,7 +581,7 @@ export async function createWorkoutRoutine(formData: FormData): Promise<ActionRe
 
     const rounds = JSON.parse(roundsData)
 
-    const hyroxPrepTypes: string[] = []
+    const hyroxPrepTypes = []
     for (const [key, value] of formData.entries()) {
       if (key.startsWith("hyroxPrepTypes-") && value === "on") {
         const type = key.replace("hyroxPrepTypes-", "")
@@ -589,7 +591,7 @@ export async function createWorkoutRoutine(formData: FormData): Promise<ActionRe
 
     const key = `routine-${Date.now()}`
 
-    const newRoutine: WorkoutRoutine = {
+    const newRoutine = {
       key,
       title,
       description,
@@ -609,29 +611,29 @@ export async function createWorkoutRoutine(formData: FormData): Promise<ActionRe
   }
 }
 
-export async function getAllRoutineKeys(): Promise<{ key: string; title: string }[]> {
+export async function getAllRoutineKeys() {
   return inMemoryRoutines.map((routine) => ({
     key: routine.key,
     title: routine.title,
   }))
 }
 
-export async function getRoutineByKey(key: string): Promise<WorkoutRoutine | null> {
+export async function getRoutineByKey(key) {
   return inMemoryRoutines.find((routine) => routine.key === key) || null
 }
 
 // Class management actions
 export async function generateClassPreview(
-  routineKeys: string[],
-  date: string,
-  time: string,
-  intensity: number,
+  templateKeys,
+  date,
+  time,
+  intensity,
   duration = 60,
   numberOfBlocks = 1,
   maxParticipants = 20,
   instructor = "",
-  editingClassId?: string,
-): Promise<ActionResult<WorkoutClass>> {
+  editingClassId,
+) {
   try {
     const existingClasses = await fetchAllClassesAdmin()
 
@@ -643,45 +645,82 @@ export async function generateClassPreview(
         : maxClassNumber + 1
     }
 
-    const routines: WorkoutRoutine[] = []
-    for (const key of routineKeys) {
-      const routine = await getRoutineByKey(key)
-      if (routine) {
-        routines.push(adjustRoutineForIntensity(routine, intensity))
+    // Get workout templates instead of routines
+    const templates = []
+    for (const templateId of templateKeys) {
+      const template = await getWorkoutTemplateById(templateId)
+      if (template) {
+        templates.push(template)
       }
     }
 
-    if (routines.length === 0) {
-      return { success: false, message: "No valid routines found" }
+    if (templates.length === 0) {
+      return { success: false, message: "No valid workout templates found" }
     }
 
-    const primaryRoutine = routines[0]
-    const className =
-      routines.length === 1
-        ? `${primaryRoutine.title} (${getIntensityLabel(intensity)} Intensity)`
-        : `Multi-Routine Class (${getIntensityLabel(intensity)} Intensity)`
+    const primaryTemplate = templates[0]
+    const className = primaryTemplate.title
+    const classDescription = primaryTemplate.description || `High-intensity workout session`
 
-    const classDescription =
-      routines.length === 1
-        ? primaryRoutine.description
-        : `Combined workout featuring: ${routines.map((r) => r.title).join(", ")}`
+    // Convert template rounds to workout breakdown format
+    const workoutBreakdown = []
+    
+    try {
+      const rounds = typeof primaryTemplate.rounds === 'string' 
+        ? JSON.parse(primaryTemplate.rounds) 
+        : primaryTemplate.rounds
+      
+      if (Array.isArray(rounds)) {
+        rounds.forEach((round, index) => {
+          if (round.exercises && Array.isArray(round.exercises)) {
+            workoutBreakdown.push({
+              title: `Round ${index + 1}`,
+              exercises: round.exercises.map(exercise => ({
+                name: exercise.name,
+                reps: exercise.reps,
+                duration: exercise.duration,
+                distance: exercise.distance,
+                weight: exercise.weight,
+                unit: exercise.type === 'reps' ? 'reps' : 
+                      exercise.type === 'time' ? 'seconds' :
+                      exercise.type === 'distance' ? (exercise.unit || 'meters') :
+                      'reps'
+              }))
+            })
+          }
+        })
+      }
+    } catch (parseError) {
+      console.error("Error parsing template rounds:", parseError)
+      // Fallback workout breakdown
+      workoutBreakdown.push({
+        title: "Main Workout",
+        exercises: [
+          { name: "Full Body Circuit", duration: duration - 10, unit: "minutes" }
+        ]
+      })
+    }
 
-    const classPreview: WorkoutClass = {
+    const classPreview = {
       id: editingClassId || `class-${Date.now()}`,
       classNumber: nextClassNumber,
-      name: className,
+      title: className,
       description: classDescription,
       date,
       time,
       duration,
+      intensity: intensity,
       numericalIntensity: intensity,
       numberOfBlocks,
       maxParticipants,
       instructor,
-      routine: routines[0],
-      routines: routines.length > 1 ? routines : undefined,
-      classFocus: getPrimaryClassFocus(routines),
-      status: "draft" as const,
+      routine: {
+        title: primaryTemplate.title,
+        description: primaryTemplate.description,
+        key: primaryTemplate.id
+      },
+      workoutBreakdown,
+      status: editingClassId ? "approved" : "draft", // Keep existing classes approved, new ones start as draft
     }
 
     return { success: true, data: classPreview }
@@ -691,26 +730,114 @@ export async function generateClassPreview(
   }
 }
 
-export async function saveApprovedClass(classData: WorkoutClass): Promise<ActionResult> {
+export async function saveApprovedClass(classData) {
   try {
-    const existingIndex = inMemoryClasses.findIndex((cls) => cls.id === classData.id)
-
-    const approvedClass: WorkoutClass = {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    
+    const approvedClass = {
       ...classData,
       status: "approved",
       intensity: classData.intensity,
       numericalIntensity: classData.intensity,
     }
 
-    if (existingIndex >= 0) {
-      inMemoryClasses[existingIndex] = approvedClass
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      // Check if class already exists (for updates)
+      const existingClass = await sql`
+        SELECT id FROM classes WHERE id = ${classData.id}
+      `
+      
+      if (existingClass.length > 0) {
+        // Update existing class
+        await sql`
+          UPDATE classes SET 
+            title = ${approvedClass.title || approvedClass.name},
+            name = ${approvedClass.name || approvedClass.title},
+            description = ${approvedClass.description || ''},
+            routine = ${JSON.stringify(approvedClass.routine)}::jsonb,
+            instructor = ${approvedClass.instructor},
+            date = ${approvedClass.date},
+            time = ${approvedClass.time},
+            duration = ${approvedClass.duration || 60},
+            intensity = ${approvedClass.intensity || 8},
+            status = ${approvedClass.status},
+            max_participants = ${approvedClass.maxParticipants || 20},
+            workout_breakdown = ${JSON.stringify(approvedClass.workoutBreakdown || [])}::jsonb,
+            class_number = ${approvedClass.classNumber || '001'},
+            class_focus = ${approvedClass.classFocus || 'General Fitness'},
+            number_of_blocks = ${approvedClass.numberOfBlocks || 1},
+            difficulty = ${approvedClass.difficulty || 'Intermediate'},
+            numerical_intensity = ${approvedClass.numericalIntensity || approvedClass.intensity || 8},
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ${classData.id}
+        `
+      } else {
+        // Insert new class
+        await sql`
+          INSERT INTO classes (
+            id, title, name, description, routine, instructor, date, time, 
+            duration, intensity, status, max_participants, workout_breakdown,
+            class_number, class_focus, number_of_blocks, difficulty, numerical_intensity
+          ) VALUES (
+            ${approvedClass.id},
+            ${approvedClass.title || approvedClass.name},
+            ${approvedClass.name || approvedClass.title},
+            ${approvedClass.description || ''},
+            ${JSON.stringify(approvedClass.routine)}::jsonb,
+            ${approvedClass.instructor},
+            ${approvedClass.date},
+            ${approvedClass.time},
+            ${approvedClass.duration || 60},
+            ${approvedClass.intensity || 8},
+            ${approvedClass.status},
+            ${approvedClass.maxParticipants || 20},
+            ${JSON.stringify(approvedClass.workoutBreakdown || [])}::jsonb,
+            ${approvedClass.classNumber || '001'},
+            ${approvedClass.classFocus || 'General Fitness'},
+            ${approvedClass.numberOfBlocks || 1},
+            ${approvedClass.difficulty || 'Intermediate'},
+            ${approvedClass.numericalIntensity || approvedClass.intensity || 8}
+          )
+        `
+      }
+      
+      console.log("[Neon] Class saved successfully to database:", approvedClass.id)
     } else {
-      inMemoryClasses.push(approvedClass)
-    }
+      // Fallback to in-memory storage
+      const existingIndex = inMemoryClasses.findIndex((cls) => cls.id === classData.id)
+      const existingClassesDataIndex = classesData.findIndex((cls) => cls.id === classData.id)
 
-    console.log("[v0] Class saved successfully. Total inMemoryClasses:", inMemoryClasses.length)
-    console.log("[v0] Approved classes:", inMemoryClasses.filter((cls) => cls.status === "approved").length)
-    console.log("[v0] Saved class data:", approvedClass)
+      console.log("[Memory] Saving class to memory:", approvedClass.id)
+      console.log("[Memory] Class status:", approvedClass.status)
+      console.log("[Memory] Existing index in inMemoryClasses:", existingIndex)
+      console.log("[Memory] Existing index in classesData:", existingClassesDataIndex)
+      console.log("[Memory] Before save - inMemoryClasses length:", inMemoryClasses.length)
+      console.log("[Memory] Before save - classesData length:", classesData.length)
+
+      // Save to inMemoryClasses
+      if (existingIndex >= 0) {
+        inMemoryClasses[existingIndex] = approvedClass
+        console.log("[Memory] Updated existing class in inMemoryClasses at index:", existingIndex)
+      } else {
+        inMemoryClasses.push(approvedClass)
+        console.log("[Memory] Added new class to inMemoryClasses")
+      }
+
+      // Also save to classesData for persistence across module reloads
+      if (existingClassesDataIndex >= 0) {
+        classesData[existingClassesDataIndex] = approvedClass
+        console.log("[Memory] Updated existing class in classesData at index:", existingClassesDataIndex)
+      } else {
+        classesData.push(approvedClass)
+        console.log("[Memory] Added new class to classesData")
+      }
+
+      console.log("[Memory] After save - inMemoryClasses length:", inMemoryClasses.length)
+      console.log("[Memory] After save - classesData length:", classesData.length)
+      console.log("[Memory] Class saved successfully. Total storage locations updated")
+    }
 
     if (typeof window !== "undefined") {
       window.dispatchEvent(
@@ -729,14 +856,32 @@ export async function saveApprovedClass(classData: WorkoutClass): Promise<Action
   }
 }
 
-export async function deleteClassById(id: string): Promise<ActionResult> {
+export async function deleteClassById(id) {
   try {
-    const index = inMemoryClasses.findIndex((cls) => cls.id === id)
-    if (index === -1) {
-      return { success: false, message: "Class not found" }
-    }
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      const result = await sql`
+        DELETE FROM classes WHERE id = ${id}
+      `
+      
+      if (result.count === 0) {
+        return { success: false, message: "Class not found" }
+      }
+      
+      console.log("[Neon] Class deleted successfully from database:", id)
+    } else {
+      // Fallback to in-memory storage
+      const index = inMemoryClasses.findIndex((cls) => cls.id === id)
+      if (index === -1) {
+        return { success: false, message: "Class not found" }
+      }
 
-    inMemoryClasses.splice(index, 1)
+      inMemoryClasses.splice(index, 1)
+      console.log("[Memory] Class deleted successfully from memory:", id)
+    }
 
     revalidatePath("/admin")
     revalidatePath("/")
@@ -747,31 +892,291 @@ export async function deleteClassById(id: string): Promise<ActionResult> {
   }
 }
 
-export async function fetchAllClassesAdmin(): Promise<WorkoutClass[]> {
-  return [...inMemoryClasses]
+export async function fetchAllClassesAdmin() {
+  try {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      const classes = await sql`
+        SELECT 
+          id, title, name, description, routine, instructor, date, time,
+          duration, intensity, status, max_participants as maxParticipants, workout_breakdown as workoutBreakdown,
+          class_number as classNumber, class_focus as classFocus, number_of_blocks as numberOfBlocks,
+          difficulty, numerical_intensity as numericalIntensity,
+          created_at, updated_at
+        FROM classes 
+        ORDER BY date ASC, time ASC
+      `
+      
+      const formattedClasses = classes.map(cls => ({
+        ...cls,
+        date: cls.date ? cls.date.toISOString().split('T')[0] : null, // Convert Date to YYYY-MM-DD string
+        routine: typeof cls.routine === 'string' ? JSON.parse(cls.routine) : cls.routine,
+        workoutBreakdown: typeof cls.workoutBreakdown === 'string' ? JSON.parse(cls.workoutBreakdown) : cls.workoutBreakdown,
+        numericalIntensity: cls.intensity,
+        created_at: cls.created_at ? cls.created_at.toISOString() : null,
+        updated_at: cls.updated_at ? cls.updated_at.toISOString() : null
+      }))
+      
+      console.log("[Neon] Fetched classes from database:", formattedClasses.length)
+      return formattedClasses
+    } else {
+      // Fallback to in-memory storage
+      console.log("[Memory] Fetched classes from memory:", inMemoryClasses.length)
+      return [...inMemoryClasses]
+    }
+  } catch (error) {
+    console.error("Error fetching classes:", error)
+    return []
+  }
 }
 
-// Main classes data for the public-facing app
-let classesData: WorkoutClass[] = [...sampleClasses]
+export async function updateClass(classId, updates) {
+  try {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      const updatedClass = {
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      }
+      
+      await sql`
+        UPDATE classes SET 
+          title = ${updatedClass.title},
+          description = ${updatedClass.description || ''},
+          routine = ${JSON.stringify(updatedClass.routine)}::jsonb,
+          instructor = ${updatedClass.instructor},
+          date = ${updatedClass.date},
+          time = ${updatedClass.time},
+          duration = ${updatedClass.duration || 60},
+          intensity = ${updatedClass.intensity || 8},
+          status = ${updatedClass.status || 'approved'},
+          maxParticipants = ${updatedClass.maxParticipants || 20},
+          workoutBreakdown = ${JSON.stringify(updatedClass.workoutBreakdown || [])}::jsonb,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ${classId}
+      `
+      
+      console.log("[Neon] Class updated successfully in database:", classId)
+      return { success: true, data: updatedClass, message: "Class updated successfully!" }
+    } else {
+      // Fallback to in-memory storage
+      const classIndex = inMemoryClasses.findIndex((cls) => cls.id === classId)
+      if (classIndex === -1) {
+        return { success: false, message: "Class not found" }
+      }
 
-export async function fetchAllClasses(): Promise<WorkoutClass[]> {
-  // Simulate API delay
-  await new Promise((resolve) => setTimeout(resolve, 500))
-  console.log("Fetching classes - inMemoryClasses:", inMemoryClasses.length)
-  console.log("Approved classes:", inMemoryClasses.filter((cls) => cls.status === "approved").length)
-  const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
-  console.log("Total classes returned:", allClasses.length)
-  return allClasses
+      const updatedClass = {
+        ...inMemoryClasses[classIndex],
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      }
+
+      inMemoryClasses[classIndex] = updatedClass
+      console.log("[Memory] Class updated successfully in memory:", classId)
+      return { success: true, data: updatedClass, message: "Class updated successfully!" }
+    }
+  } catch (error) {
+    console.error("Error updating class:", error)
+    return { success: false, message: "Failed to update class" }
+  }
 }
 
-export async function fetchClassById(id: string): Promise<WorkoutClass | null> {
-  // Simulate API delay
-  await new Promise((resolve) => setTimeout(resolve, 300))
-  const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
-  return allClasses.find((cls) => cls.id === id) || null
+export async function getClassById(classId) {
+  try {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      const classes = await sql`
+        SELECT 
+          id, title, description, routine, instructor, date, time,
+          duration, intensity, status, maxParticipants, workoutBreakdown,
+          created_at, updated_at
+        FROM classes 
+        WHERE id = ${classId}
+      `
+      
+      if (classes.length === 0) {
+        return null
+      }
+      
+      const cls = classes[0]
+      return {
+        ...cls,
+        routine: typeof cls.routine === 'string' ? JSON.parse(cls.routine) : cls.routine,
+        workoutBreakdown: typeof cls.workoutBreakdown === 'string' ? JSON.parse(cls.workoutBreakdown) : cls.workoutBreakdown,
+        numericalIntensity: cls.intensity
+      }
+    } else {
+      // Fallback to in-memory storage
+      const classItem = inMemoryClasses.find((cls) => cls.id === classId)
+      return classItem || null
+    }
+  } catch (error) {
+    console.error("Error fetching class:", error)
+    return null
+  }
 }
 
-export async function saveClass(workoutClass: WorkoutClass): Promise<void> {
+// Main classes data for the public-facing app - now empty, only show admin-created classes
+let classesData = []
+
+export async function fetchAllClasses() {
+  console.log("🔍 [fetchAllClasses] Function called from client!")
+  try {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    console.log("🔍 [fetchAllClasses] USE_NEON_FOR_CLASSES:", useNeon)
+    
+    if (useNeon) {
+      console.log("🔍 [fetchAllClasses] Using Neon database")
+      const sql = getNeonSql()
+      console.log("🔍 [fetchAllClasses] Got SQL instance:", !!sql)
+      
+      try {
+        const classes = await sql`
+          SELECT 
+            id, title, name, description, routine, instructor, date, time,
+            duration, intensity, status, max_participants as maxParticipants, workout_breakdown as workoutBreakdown,
+            class_number as classNumber, class_focus as classFocus, number_of_blocks as numberOfBlocks,
+            difficulty, numerical_intensity as numericalIntensity,
+            created_at, updated_at
+          FROM classes 
+          WHERE status = 'approved'
+          ORDER BY date ASC, time ASC
+        `
+        
+        console.log("🔍 [fetchAllClasses] Classes found:", classes.length)
+        
+        const formattedClasses = classes.map(cls => ({
+          id: cls.id,
+          title: cls.title || cls.name,
+          name: cls.name || cls.title,
+          description: cls.description,
+          routine: typeof cls.routine === 'string' ? JSON.parse(cls.routine) : cls.routine,
+          instructor: cls.instructor,
+          date: cls.date ? cls.date.toISOString().split('T')[0] : null, // Convert Date to YYYY-MM-DD string
+          time: cls.time,
+          duration: cls.duration,
+          intensity: cls.intensity,
+          status: cls.status,
+          maxParticipants: cls.maxparticipants, // Fix camelCase mapping
+          workoutBreakdown: typeof cls.workoutbreakdown === 'string' ? JSON.parse(cls.workoutbreakdown) : cls.workoutbreakdown, // Fix camelCase mapping
+          classNumber: cls.classnumber, // Fix camelCase mapping  
+          classFocus: cls.classfocus, // Fix camelCase mapping
+          numberOfBlocks: cls.numberofblocks, // Fix camelCase mapping
+          difficulty: cls.difficulty,
+          numericalIntensity: cls.numericalintensity || cls.intensity, // Fix camelCase mapping
+          created_at: cls.created_at ? cls.created_at.toISOString() : null,
+          updated_at: cls.updated_at ? cls.updated_at.toISOString() : null
+        }))
+        
+        console.log("🔍 [fetchAllClasses] Returning formatted classes:", formattedClasses.length)
+        console.log("🔍 [fetchAllClasses] Sample class data:", JSON.stringify(formattedClasses[0], null, 2))
+        return formattedClasses
+      } catch (dbError) {
+        console.error("🔍 [fetchAllClasses] Database query error:", dbError)
+        throw dbError
+      }
+    } else {
+      // Fallback to in-memory storage
+      const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
+      return allClasses
+    }
+  } catch (error) {
+    console.error("Error fetching all classes:", error)
+    // Fallback to in-memory storage on error
+    const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
+    return allClasses
+  }
+}
+
+export async function fetchClassById(id) {
+  console.log(`🔍 [fetchClassById] Fetching class with ID: ${id}`)
+  try {
+    const useNeon = process.env.USE_NEON_FOR_CLASSES === 'true'
+    console.log(`🔍 [fetchClassById] USE_NEON_FOR_CLASSES: ${useNeon}`)
+    
+    if (useNeon) {
+      const sql = getNeonSql()
+      
+      if (!sql) {
+        console.log('🔍 [fetchClassById] SQL instance not available, falling back to in-memory')
+        // Fallback to in-memory storage
+        const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
+        return allClasses.find((cls) => cls.id === id) || null
+      }
+      
+      console.log('🔍 [fetchClassById] Querying database for class')
+      const classes = await sql`
+        SELECT 
+          id, title, name, description, routine, instructor, date, time,
+          duration, intensity, status, max_participants as maxParticipants, workout_breakdown as workoutBreakdown,
+          class_number as classNumber, class_focus as classFocus, number_of_blocks as numberOfBlocks,
+          difficulty, numerical_intensity as numericalIntensity,
+          created_at, updated_at
+        FROM classes 
+        WHERE id = ${id}
+        LIMIT 1
+      `
+      
+      if (classes.length === 0) {
+        console.log('🔍 [fetchClassById] No class found in database')
+        return null
+      }
+      
+      console.log('🔍 [fetchClassById] Class found in database')
+      const cls = classes[0]
+      const formattedClass = {
+        id: cls.id,
+        title: cls.title || cls.name,
+        name: cls.name || cls.title,
+        description: cls.description,
+        routine: typeof cls.routine === 'string' ? JSON.parse(cls.routine) : cls.routine,
+        instructor: cls.instructor,
+        date: cls.date ? cls.date.toISOString().split('T')[0] : null, // Convert Date to YYYY-MM-DD string
+        time: cls.time,
+        duration: cls.duration,
+        intensity: cls.intensity,
+        status: cls.status,
+        maxParticipants: cls.maxparticipants, // Fix camelCase mapping
+        workoutBreakdown: typeof cls.workoutbreakdown === 'string' ? JSON.parse(cls.workoutbreakdown) : cls.workoutbreakdown, // Fix camelCase mapping
+        classNumber: cls.classnumber, // Fix camelCase mapping  
+        classFocus: cls.classfocus, // Fix camelCase mapping
+        numberOfBlocks: cls.numberofblocks, // Fix camelCase mapping
+        difficulty: cls.difficulty,
+        numericalIntensity: cls.numericalintensity || cls.intensity, // Fix camelCase mapping
+        created_at: cls.created_at ? cls.created_at.toISOString() : null,
+        updated_at: cls.updated_at ? cls.updated_at.toISOString() : null
+      }
+      
+      console.log(`🔍 [fetchClassById] Returning formatted class with workoutBreakdown length: ${formattedClass.workoutBreakdown?.length || 0}`)
+      console.log(`🔍 [fetchClassById] Sample workoutBreakdown:`, JSON.stringify(formattedClass.workoutBreakdown, null, 2))
+      return formattedClass
+    } else {
+      // Fallback to in-memory storage
+      const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
+      const foundClass = allClasses.find((cls) => cls.id === id)
+      
+      return foundClass || null
+    }
+  } catch (error) {
+    console.error("[fetchClassById] Error fetching class by ID:", error)
+    
+    // Fallback to in-memory storage on any error
+    const allClasses = [...classesData, ...inMemoryClasses.filter((cls) => cls.status === "approved")]
+    const foundClass = allClasses.find((cls) => cls.id === id)
+    return foundClass || null
+  }
+}
+
+export async function saveClass(workoutClass) {
   // Simulate API delay
   await new Promise((resolve) => setTimeout(resolve, 500))
 
@@ -783,14 +1188,14 @@ export async function saveClass(workoutClass: WorkoutClass): Promise<void> {
   }
 }
 
-export async function deleteClassByIdSimulated(id: string): Promise<void> {
+export async function deleteClassByIdSimulated(id) {
   // Simulate API delay
   await new Promise((resolve) => setTimeout(resolve, 300))
 
   classesData = classesData.filter((cls) => cls.id !== id)
 }
 
-export async function deleteClass(id: string): Promise<ActionResult> {
+export async function deleteClass(id) {
   try {
     const index = classesData.findIndex((cls) => cls.id === id)
     if (index === -1) {
@@ -809,20 +1214,15 @@ export async function deleteClass(id: string): Promise<ActionResult> {
 }
 
 // AI-Powered Features
-export async function generateClassTone(routineData: {
-  title: string
-  description: string
-  hyroxPrepTypes: string[]
-  rounds: any[]
-}): Promise<ActionResult<string>> {
+export async function generateClassTone(routineData) {
   try {
     const { title, description, hyroxPrepTypes, rounds } = routineData
 
     const totalExercises = rounds.reduce((acc, round) => acc + round.exercises.length, 0)
     const hasCardio = rounds.some((round) =>
-      round.exercises.some((ex: any) => ex.name.toLowerCase().includes("run") || ex.name.toLowerCase().includes("row")),
+      round.exercises.some((ex) => ex.name.toLowerCase().includes("run") || ex.name.toLowerCase().includes("row")),
     )
-    const hasStrength = rounds.some((round) => round.exercises.some((ex: any) => ex.isWeightBased || ex.weight))
+    const hasStrength = rounds.some((round) => round.exercises.some((ex) => ex.isWeightBased || ex.weight))
 
     let reasoning = `This ${title.toLowerCase()} routine is specifically designed to `
 
@@ -864,7 +1264,7 @@ export async function generateClassTone(routineData: {
 }
 
 // Program management actions
-export async function getCurrentProgram(): Promise<TrainingProgram | null> {
+export async function getCurrentProgram() {
   if (USE_NEON_FOR_PROGRAMS) {
     return await getCurrentProgramNeon()
   }
@@ -875,7 +1275,41 @@ export async function getCurrentProgram(): Promise<TrainingProgram | null> {
   return activeProgram || null
 }
 
-export async function updateProgramWeek(newWeek: number): Promise<ActionResult> {
+export async function fetchAllPrograms() {
+  if (USE_NEON_FOR_PROGRAMS) {
+    // TODO: Add getAllProgramsNeon() function when database is ready
+    try {
+      const { Pool } = await import('@neondatabase/serverless')
+      const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+      
+      const result = await pool.query(`
+        SELECT 
+          p.id,
+          p.name,
+          p.subtitle,
+          p.description,
+          p.total_weeks,
+          p.current_week,
+          p.status,
+          p.created_at,
+          CASE WHEN p.status = 'active' THEN true ELSE false END as "isActive"
+        FROM programs p
+        ORDER BY p.created_at DESC
+      `)
+      
+      return result.rows
+    } catch (error) {
+      console.error('Error fetching all programs from Neon:', error)
+      // Fallback to in-memory
+    }
+  }
+
+  // Fallback to existing in-memory implementation
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  return inMemoryPrograms
+}
+
+export async function updateProgramWeek(newWeek) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.isActive)
     if (programIndex === -1) {
@@ -888,7 +1322,7 @@ export async function updateProgramWeek(newWeek: number): Promise<ActionResult> 
     }
 
     const updatedPhases = program.phases.map((phase) => {
-      let status: "completed" | "current" | "upcoming"
+      let status = "completed" | "current" | "upcoming"
       if (newWeek > phase.endWeek) {
         status = "completed"
       } else if (newWeek >= phase.startWeek && newWeek <= phase.endWeek) {
@@ -915,12 +1349,7 @@ export async function updateProgramWeek(newWeek: number): Promise<ActionResult> 
   }
 }
 
-export async function createProgram(programData: {
-  name: string
-  subtitle: string
-  startDate: string
-  phases: Array<{ name: string; weeks: number; focus: string }>
-}): Promise<ActionResult<TrainingProgram>> {
+export async function createProgram(programData) {
   if (USE_NEON_FOR_PROGRAMS) {
     const result = await createProgramNeon(programData)
     if (result.success) {
@@ -957,7 +1386,7 @@ export async function createProgram(programData: {
       }
     })
 
-    const newProgram: TrainingProgram = {
+    const newProgram = {
       id: `program-${Date.now()}`,
       name: programData.name,
       subtitle: programData.subtitle,
@@ -980,10 +1409,7 @@ export async function createProgram(programData: {
   }
 }
 
-export async function updateProgramDetails(
-  programId: string,
-  updates: { name?: string; subtitle?: string; startDate?: string; totalWeeks?: number },
-): Promise<ActionResult> {
+export async function updateProgramDetails(programId, updates) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.id === programId)
     if (programIndex === -1) {
@@ -994,7 +1420,7 @@ export async function updateProgramDetails(
 
     if (updates.totalWeeks && updates.totalWeeks !== program.totalWeeks) {
       const updatedPhases = program.phases.map((phase) => {
-        let status: "completed" | "current" | "upcoming"
+        let status = "completed" | "current" | "upcoming"
         if (program.currentWeek > phase.endWeek) {
           status = "completed"
         } else if (program.currentWeek >= phase.startWeek && program.currentWeek <= phase.endWeek) {
@@ -1028,11 +1454,7 @@ export async function updateProgramDetails(
   }
 }
 
-export async function addProgramPhase(phaseData: {
-  name: string
-  weeks: number
-  focus: string
-}): Promise<ActionResult> {
+export async function addProgramPhase(phaseData) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.isActive)
     if (programIndex === -1) {
@@ -1040,7 +1462,7 @@ export async function addProgramPhase(phaseData: {
     }
 
     const program = inMemoryPrograms[programIndex]
-    const newPhase: ProgramPhase = {
+    const newPhase = {
       id: `phase-${Date.now()}`,
       name: phaseData.name,
       weeks: phaseData.weeks,
@@ -1066,10 +1488,7 @@ export async function addProgramPhase(phaseData: {
   }
 }
 
-export async function updateProgramPhase(
-  phaseId: string,
-  updates: { name: string; weeks: number; focus: string },
-): Promise<ActionResult> {
+export async function updateProgramPhase(phaseId, updates) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.isActive)
     if (programIndex === -1) {
@@ -1104,7 +1523,7 @@ export async function updateProgramPhase(
   }
 }
 
-export async function deleteProgramPhase(phaseId: string): Promise<ActionResult> {
+export async function deleteProgramPhase(phaseId) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.isActive)
     if (programIndex === -1) {
@@ -1140,7 +1559,7 @@ export async function deleteProgramPhase(phaseId: string): Promise<ActionResult>
   }
 }
 
-export async function reorderProgramPhases(newPhaseOrderIds: string[]): Promise<ActionResult> {
+export async function reorderProgramPhases(newPhaseOrderIds) {
   try {
     const programIndex = inMemoryPrograms.findIndex((program) => program.isActive)
     if (programIndex === -1) {
@@ -1168,28 +1587,158 @@ export async function reorderProgramPhases(newPhaseOrderIds: string[]): Promise<
   }
 }
 
+// Workout template actions
+export async function createWorkoutTemplate(templateData) {
+  if (USE_NEON_FOR_TEMPLATES) {
+    return await createWorkoutTemplateNeon(templateData)
+  }
+
+  // Fallback to existing in-memory implementation
+  try {
+    const { inMemoryWorkoutTemplates } = await import("@/lib/workouts")
+
+    const newTemplate = {
+      ...templateData,
+      id: `template-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    inMemoryWorkoutTemplates.push(newTemplate)
+
+    revalidatePath("/admin")
+    return { success: true, data: newTemplate, message: "Template created successfully!" }
+  } catch (error) {
+    console.error("Error creating workout template:", error)
+    return { success: false, message: "Failed to create template" }
+  }
+}
+
+export async function fetchAllWorkoutTemplates() {
+  if (USE_NEON_FOR_TEMPLATES) {
+    return await fetchAllWorkoutTemplatesNeon()
+  }
+
+  // Fallback to existing in-memory implementation
+  const { inMemoryWorkoutTemplates } = await import("@/lib/workouts")
+  return [...inMemoryWorkoutTemplates]
+}
+
+export async function getWorkoutTemplateById(templateId) {
+  if (USE_NEON_FOR_TEMPLATES) {
+    try {
+      const sql = getNeonSql()
+      
+      const templates = await sql`
+        SELECT id, title, description, rounds, hyrox_prep_types, hyrox_reasoning, other_hyrox_prep_notes
+        FROM workout_templates 
+        WHERE id = ${templateId}
+      `
+      
+      if (templates.length === 0) {
+        return null
+      }
+      
+      const template = templates[0]
+      return {
+        ...template,
+        rounds: typeof template.rounds === 'string' ? JSON.parse(template.rounds) : template.rounds
+      }
+    } catch (error) {
+      console.error("Error fetching workout template by ID:", error)
+      return null
+    }
+  }
+
+  // Fallback to existing in-memory implementation
+  const { inMemoryWorkoutTemplates } = await import("@/lib/workouts")
+  return inMemoryWorkoutTemplates.find(template => template.id === templateId) || null
+}
+
+export async function updateWorkoutTemplate(templateId, updates) {
+  if (USE_NEON_FOR_TEMPLATES) {
+    const result = await updateWorkoutTemplateNeon(templateId, updates)
+    if (result.success) {
+      revalidatePath("/admin")
+    }
+    return result
+  }
+
+  // Fallback to existing in-memory implementation
+  try {
+    const { inMemoryWorkoutTemplates } = await import("@/lib/workouts")
+    const templateIndex = inMemoryWorkoutTemplates.findIndex((template) => template.id === templateId)
+
+    if (templateIndex === -1) {
+      return { success: false, message: "Template not found" }
+    }
+
+    const updatedTemplate = {
+      ...inMemoryWorkoutTemplates[templateIndex],
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    }
+
+    inMemoryWorkoutTemplates[templateIndex] = updatedTemplate
+
+    revalidatePath("/admin")
+    return { success: true, data: updatedTemplate, message: "Template updated successfully!" }
+  } catch (error) {
+    console.error("Error updating workout template:", error)
+    return { success: false, message: "Failed to update template" }
+  }
+}
+
+export async function deleteWorkoutTemplate(templateId) {
+  if (USE_NEON_FOR_TEMPLATES) {
+    const result = await deleteWorkoutTemplateNeon(templateId)
+    if (result.success) {
+      revalidatePath("/admin")
+    }
+    return result
+  }
+
+  // Fallback to existing in-memory implementation
+  try {
+    const { inMemoryWorkoutTemplates } = await import("@/lib/workouts")
+    const templateIndex = inMemoryWorkoutTemplates.findIndex((template) => template.id === templateId)
+
+    if (templateIndex === -1) {
+      return { success: false, message: "Template not found" }
+    }
+
+    inMemoryWorkoutTemplates.splice(templateIndex, 1)
+
+    revalidatePath("/admin")
+    return { success: true, message: "Template deleted successfully!" }
+  } catch (error) {
+    console.error("Error deleting workout template:", error)
+    return { success: false, message: "Failed to delete template" }
+  }
+}
+
 // Sponsorship management actions
-export async function submitSponsorshipRequest(formData: FormData): Promise<ActionResult<SponsorshipRequest>> {
+export async function submitSponsorshipRequest(formData) {
   if (USE_NEON_FOR_SPONSORSHIP) {
     return await submitSponsorshipRequestNeon(formData)
   }
 
   // Fallback to existing in-memory implementation
   try {
-    const contactName = formData.get("contactName") as string
-    const email = formData.get("email") as string
-    const company = formData.get("company") as string
-    const phone = formData.get("phone") as string
-    const packageType = formData.get("packageType") as string
-    const industry = formData.get("industry") as string
-    const message = formData.get("message") as string
+    const contactName = formData.get("contactName")
+    const email = formData.get("email")
+    const company = formData.get("company")
+    const phone = formData.get("phone")
+    const packageType = formData.get("packageType")
+    const industry = formData.get("industry")
+    const message = formData.get("message")
     const newsletter = formData.get("newsletter") === "on"
 
     if (!contactName || !email || !company || !packageType) {
       return { success: false, message: "Missing required fields" }
     }
 
-    const newRequest: SponsorshipRequest = {
+    const newRequest = {
       id: `sponsor-req-${Date.now()}`,
       contactName,
       email,
@@ -1219,15 +1768,12 @@ export async function submitSponsorshipRequest(formData: FormData): Promise<Acti
   }
 }
 
-export async function getAllSponsorshipRequests(): Promise<SponsorshipRequest[]> {
+export async function getAllSponsorshipRequests() {
   const { inMemorySponsorshipRequests } = await import("@/lib/sponsorship")
   return [...inMemorySponsorshipRequests]
 }
 
-export async function updateSponsorshipRequestStatus(
-  requestId: string,
-  status: SponsorshipRequest["status"],
-): Promise<ActionResult> {
+export async function updateSponsorshipRequestStatus(requestId, status) {
   try {
     const { inMemorySponsorshipRequests } = await import("@/lib/sponsorship")
     const requestIndex = inMemorySponsorshipRequests.findIndex((req) => req.id === requestId)
@@ -1246,18 +1792,16 @@ export async function updateSponsorshipRequestStatus(
   }
 }
 
-export async function fetchAllSponsorshipPackages(): Promise<SponsorshipPackage[]> {
+export async function fetchAllSponsorshipPackages() {
   const { inMemorySponsorshipPackages } = await import("@/lib/sponsorship")
   return [...inMemorySponsorshipPackages]
 }
 
-export async function createSponsorshipPackage(
-  packageData: SponsorshipPackage,
-): Promise<ActionResult<SponsorshipPackage>> {
+export async function createSponsorshipPackage(packageData) {
   try {
     const { inMemorySponsorshipPackages } = await import("@/lib/sponsorship")
 
-    const newPackage: SponsorshipPackage = {
+    const newPackage = {
       ...packageData,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1274,10 +1818,7 @@ export async function createSponsorshipPackage(
   }
 }
 
-export async function updateSponsorshipPackage(
-  packageId: string,
-  updates: Partial<SponsorshipPackage>,
-): Promise<ActionResult<SponsorshipPackage>> {
+export async function updateSponsorshipPackage(packageId, updates) {
   try {
     const { inMemorySponsorshipPackages } = await import("@/lib/sponsorship")
     const packageIndex = inMemorySponsorshipPackages.findIndex((pkg) => pkg.id === packageId)
@@ -1303,7 +1844,7 @@ export async function updateSponsorshipPackage(
   }
 }
 
-export async function deleteSponsorshipPackage(packageId: string): Promise<ActionResult> {
+export async function deleteSponsorshipPackage(packageId) {
   try {
     const { inMemorySponsorshipPackages } = await import("@/lib/sponsorship")
     const packageIndex = inMemorySponsorshipPackages.findIndex((pkg) => pkg.id === packageId)
@@ -1324,18 +1865,20 @@ export async function deleteSponsorshipPackage(packageId: string): Promise<Actio
 }
 
 // App settings management for Spotify playlist and other global settings
-interface AppSettings {
-  playlists: {
-    id: string
-    name: string
-    category: string
-    url: string
-    isDefault: boolean
-  }[]
+let AppSettings = {
+  playlists: [
+    {
+    id: "string",
+    name: "string",
+    category: "string",
+    url: "string",
+    isDefault: "boolean",
+  }
+]
 }
 
 // In-memory storage for app settings
-let inMemoryAppSettings: AppSettings = {
+let inMemoryAppSettings = {
   playlists: [
     {
       id: "1",
@@ -1361,12 +1904,12 @@ let inMemoryAppSettings: AppSettings = {
   ],
 }
 
-export async function getAppSettings(): Promise<AppSettings> {
+export async function getAppSettings() {
   await new Promise((resolve) => setTimeout(resolve, 200))
   return { ...inMemoryAppSettings }
 }
 
-export async function updateAppSettings(settings: AppSettings): Promise<ActionResult> {
+export async function updateAppSettings(settings) {
   try {
     inMemoryAppSettings = { ...settings }
 
@@ -1378,3 +1921,24 @@ export async function updateAppSettings(settings: AppSettings): Promise<ActionRe
     return { success: false, message: "Failed to update app settings" }
   }
 }
+
+// export async function createClasses(classData) {
+//   try {
+//     const { inMemoryClasses } = await import("@/lib/classes")
+
+//     const newClass = {
+//       ...classData,
+//       createdAt: new Date().toISOString(),
+//       updatedAt: new Date().toISOString(),
+//     }
+
+//     inMemoryClasses.push(newClass)
+
+//     revalidatePath("/admin")
+//     revalidatePath("/classes")
+//     return { success: true, data: newClass, message: "Class created successfully!" }
+//   } catch (error) {
+//     console.error("Error creating class:", error)
+//     return { success: false, message: "Failed to create class" }
+//   }
+// }
